@@ -1,0 +1,31 @@
+# dependencies
+node_modules/
+
+# builds
+dist/
+build/
+.next/
+
+# secrets — never commit these
+.env
+.env.*
+!.env.example
+
+# test media (keep these in the shared Drive)
+*.mp4
+*.mov
+*.webm
+*.mkv
+*.mp3
+*.m4a
+*.wav
+
+# editor and OS junk
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# logs
+*.log
+npm-debug.log*
