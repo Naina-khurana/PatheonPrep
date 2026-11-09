@@ -180,6 +180,8 @@ export interface VideoReview {
   durationSeconds?: number;
   /** e.g. "Public Forum" — shown next to the title. */
   format?: string;
+  /** e.g. "Rebuttal" — which speech of the round this is, if the student said. */
+  speechType?: string;
   /** Optional context the student typed when submitting. */
   notes?: string;
 
@@ -214,6 +216,10 @@ export interface CreateReviewRequest {
   title: string;
   source: ReviewSource;
   notes?: string;
+  /** Optional debate format, one of DEBATE_FORMATS. Tunes the feedback to its rules. */
+  format?: string;
+  /** Optional speech within that format, one of SPEECH_TYPES[format]. */
+  speechType?: string;
 }
 
 // ───────────────────────── 2. limits ─────────────────────────
@@ -234,6 +240,23 @@ export const LIMITS = {
     "audio/webm",
   ],
 } as const;
+
+export const DEBATE_FORMATS = ["Public Forum", "Lincoln-Douglas", "Policy"] as const;
+export type DebateFormat = (typeof DEBATE_FORMATS)[number];
+
+/** The speeches of each format, in round order. The server accepts exactly these. */
+export const SPEECH_TYPES: Record<DebateFormat, readonly string[]> = {
+  "Public Forum": ["Constructive", "Rebuttal", "Summary", "Final Focus", "Crossfire"],
+  "Lincoln-Douglas": [
+    "Affirmative Constructive (1AC)",
+    "Negative Constructive (1NC)",
+    "First Affirmative Rebuttal (1AR)",
+    "Negative Rebuttal (2NR)",
+    "Second Affirmative Rebuttal (2AR)",
+    "Cross-Examination",
+  ],
+  Policy: ["1AC", "1NC", "2AC", "2NC", "1NR", "1AR", "2NR", "2AR", "Cross-Examination"],
+};
 
 /** A user-facing reason this file can't be submitted, or null if it's fine. */
 export function checkFile(file: File): string | null {
@@ -1128,7 +1151,13 @@ export function VideoReviewTool({ api, role }: { api: VideoReviewApi; role: Role
       const { fileKey } = await api.uploadFile(file, onProgress);
       source = { kind, fileKey, contentType: file.type, durationSeconds };
     }
-    const review = await api.createReview({ title: input.title.trim(), source, notes: input.notes.trim() || undefined });
+    const review = await api.createReview({
+      title: input.title.trim(),
+      source,
+      notes: input.notes.trim() || undefined,
+      format: input.format || undefined,
+      speechType: input.speechType || undefined,
+    });
     upsert(review);
     setOpenId(review.id);
     setView("review");
@@ -1339,6 +1368,9 @@ interface SubmitInput {
   title: string;
   source: ChosenSource;
   notes: string;
+  /** Empty string when the student skipped the picker. */
+  format: string;
+  speechType: string;
 }
 
 type Route = ChosenSource["kind"];
@@ -1367,6 +1399,8 @@ function SubmitFlow({
   const [route, setRoute] = useState<Route | null>(null);
   const [source, setSource] = useState<ChosenSource | null>(null);
   const [notes, setNotes] = useState("");
+  const [format, setFormat] = useState("");
+  const [speechType, setSpeechType] = useState("");
   const [index, setIndex] = useState(0);
   const [saving, setSaving] = useState<{ label: string; progress: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1428,6 +1462,22 @@ function SubmitFlow({
       body: route && <SourceInput kind={route} value={source} onChange={setSource} nameHint={title} />,
     },
     {
+      eyebrow: "The speech",
+      prompt: "Which format and speech is it?",
+      detail: "Optional. The feedback is tuned to the rules of that speech.",
+      ready: true,
+      body: (
+        <FormatPicker
+          format={format}
+          speechType={speechType}
+          onChange={(next) => {
+            setFormat(next.format);
+            setSpeechType(next.speechType);
+          }}
+        />
+      ),
+    },
+    {
       eyebrow: "Notes",
       prompt: "Anything the reviewer should know?",
       detail: "Optional: your side, which speech this is, what you want feedback on.",
@@ -1450,7 +1500,7 @@ function SubmitFlow({
     setError(null);
     setSaving({ label: source.kind === "link" ? "Saving your round…" : "Uploading your video…", progress: source.kind === "link" ? null : 0 });
     try {
-      await onSubmit({ title, source, notes }, (progress) => setSaving({ label: "Uploading your video…", progress }));
+      await onSubmit({ title, source, notes, format, speechType }, (progress) => setSaving({ label: "Uploading your video…", progress }));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't save this round. Try again.");
       setSaving(null);
@@ -1473,6 +1523,62 @@ function SubmitFlow({
       onNext={() => (index < steps.length - 1 ? setIndex(index + 1) : void finish())}
       overlay={saving && <SavingScreen label={saving.label} progress={saving.progress} />}
     />
+  );
+}
+
+/** Optional format and speech picker. Choosing a format narrows the speeches to that format's. */
+function FormatPicker({
+  format,
+  speechType,
+  onChange,
+}: {
+  format: string;
+  speechType: string;
+  onChange: (next: { format: string; speechType: string }) => void;
+}) {
+  const speeches = format ? SPEECH_TYPES[format as DebateFormat] ?? [] : [];
+  const chip = (picked: boolean) =>
+    `rounded-[6px] border-2 px-3 py-2.5 text-left text-[14px] font-semibold transition-colors ${
+      picked ? "border-[#ca8a04] bg-[#fefce8] text-[#1f2430] ring-1 ring-[#ca8a04]" : "border-[#e0e0e0] bg-white text-[#1f2430] hover:border-[#ca8a04]/60"
+    }`;
+  return (
+    <div className="space-y-5">
+      <div className="space-y-2">
+        <p className="text-[11px] font-bold uppercase tracking-widest text-[#6b7280]">Format</p>
+        <div role="radiogroup" aria-label="Debate format" className="grid gap-2 sm:grid-cols-3">
+          {DEBATE_FORMATS.map((f) => {
+            const picked = format === f;
+            return (
+              <button
+                key={f}
+                type="button"
+                role="radio"
+                aria-checked={picked}
+                onClick={() => onChange(picked ? { format: "", speechType: "" } : { format: f, speechType: "" })}
+                className={chip(picked)}
+              >
+                {f}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {format && (
+        <div className="space-y-2">
+          <p className="text-[11px] font-bold uppercase tracking-widest text-[#6b7280]">Speech</p>
+          <div role="radiogroup" aria-label="Speech type" className="grid gap-2 sm:grid-cols-3">
+            {speeches.map((sp) => {
+              const picked = speechType === sp;
+              return (
+                <button key={sp} type="button" role="radio" aria-checked={picked} onClick={() => onChange({ format, speechType: picked ? "" : sp })} className={chip(picked)}>
+                  {sp}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -2392,11 +2498,28 @@ function Transcript({ review, curTime, onSeek }: { review: Review; curTime: numb
 // the real backend exists (see README.md).
 
 
+/**
+ * Set VITE_API_BASE_URL (see web/.env.example) to talk to our server instead of
+ * the mock. Until the host app's sign-in exists, the X-Dev-User header stands
+ * in for the session and follows the Student / Teacher switch.
+ */
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim();
+
 export default function App() {
   const [role, setRole] = useState<Role>("student");
   // Mock only: the fake backend needs to know who's looking. Remove this line
   // when switching to the real API, which knows from the session.
   setMockViewer(role);
+  const api = useMemo<VideoReviewApi>(
+    () =>
+      API_BASE_URL
+        ? createHttpApi({
+            baseUrl: API_BASE_URL,
+            getHeaders: async () => ({ "X-Dev-User": role === "teacher" ? "teacher-1" : "student-1" }),
+          })
+        : mockApi,
+    [role],
+  );
 
   return (
     <div className="flex h-screen flex-col bg-[#f5f4f0] text-[#1f2430]">
@@ -2422,7 +2545,7 @@ export default function App() {
 
       {/* `key` resets the tool when switching views. */}
       <main className="min-h-0 flex-1 p-6">
-        <VideoReviewTool key={role} api={mockApi} role={role} />
+        <VideoReviewTool key={role} api={api} role={role} />
       </main>
     </div>
   );
