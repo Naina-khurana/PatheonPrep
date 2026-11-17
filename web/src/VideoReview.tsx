@@ -34,6 +34,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type
 import {
   AlertTriangle,
   ArrowLeft,
+  Bell,
   Camera,
   CameraOff,
   Check,
@@ -48,6 +49,7 @@ import {
   Play,
   Plus,
   RotateCcw,
+  Search,
   Square,
   Upload,
   X,
@@ -123,6 +125,50 @@ export interface CoachSummary {
   date: string;
 }
 
+/** A timestamped comment a teacher added to a student's review. */
+export interface TeacherNote {
+  id: string;
+  /** "m:ss" or "m:ss-m:ss", inside the recording. */
+  time: string;
+  text: string;
+  kind: "strength" | "improvement";
+  author: string;
+  /** ISO 8601. */
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** An in-app notification, from GET /notifications. */
+export interface AppNotification {
+  id: string;
+  kind: "FEEDBACK_READY";
+  reviewId: string;
+  title: string;
+  body: string;
+  /** ISO 8601. */
+  createdAt: string;
+  /** Absent until the user has read it. */
+  readAt?: string;
+}
+
+/** One caption: a short stretch of the transcript, sized to sit over the video. */
+export interface CaptionCue {
+  start: number;
+  end: number;
+  text: string;
+}
+
+/** One place the search text was said, from GET /video-reviews/:id/search. */
+export interface TranscriptMatch {
+  /** Seconds to seek to: where the matching words begin. */
+  time: number;
+  /** The transcript segment the match is in. */
+  start: number;
+  end: number;
+  /** The words around the match. */
+  text: string;
+}
+
 /** The whole AI review of one speech. This is exactly what the UI renders. */
 export interface VideoFeedback {
   /** Overall score, 1.0–10.0. */
@@ -195,6 +241,8 @@ export interface VideoReview {
 
   transcript?: TranscriptSegment[];
   feedback?: VideoFeedback;
+  /** Timestamped comments from the student's teacher, oldest first. */
+  teacherNotes?: TeacherNote[];
 }
 
 /** Response of POST /video-reviews/upload-url. */
@@ -285,6 +333,12 @@ export interface VideoReviewApi {
   analyzeReview(id: string): Promise<VideoReview>;
   /** DELETE /video-reviews/:id → { ok: true }. Owner only; removes the stored file too. */
   deleteReview(id: string): Promise<void>;
+  /** GET /notifications → the caller's own notifications, newest first. */
+  listNotifications(): Promise<AppNotification[]>;
+  /** POST /notifications/:id/read. */
+  markNotificationRead(id: string): Promise<void>;
+  /** POST /notifications/read-all. */
+  markAllNotificationsRead(): Promise<void>;
 }
 
 export class ApiError extends Error {
@@ -303,12 +357,15 @@ export interface HttpApiOptions {
 }
 
 export function createHttpApi({ baseUrl, getHeaders, credentials }: HttpApiOptions): VideoReviewApi {
-  const root = baseUrl.replace(/\/+$/, "") + "/video-reviews";
+  const base = baseUrl.replace(/\/+$/, "");
+  const root = base + "/video-reviews";
 
-  async function call<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+  const call = <T,>(path: string, method = "GET", body?: unknown) => request<T>(root + path, method, body);
+
+  async function request<T>(url: string, method = "GET", body?: unknown): Promise<T> {
     const headers: Record<string, string> = { ...(await getHeaders?.()) };
     if (body !== undefined) headers["Content-Type"] = "application/json";
-    const res = await fetch(root + path, {
+    const res = await fetch(url, {
       method,
       headers,
       credentials,
@@ -337,6 +394,13 @@ export function createHttpApi({ baseUrl, getHeaders, credentials }: HttpApiOptio
       });
       await putWithProgress(ticket, file, onProgress);
       return { fileKey: ticket.fileKey };
+    },
+    listNotifications: async () => (await request<{ notifications: AppNotification[] }>(`${base}/notifications`)).notifications,
+    markNotificationRead: async (id) => {
+      await request(`${base}/notifications/${encodeURIComponent(id)}/read`, "POST");
+    },
+    markAllNotificationsRead: async () => {
+      await request(`${base}/notifications/read-all`, "POST");
     },
   };
 }
@@ -425,6 +489,8 @@ function createMockApi(getViewer: () => MockViewer = () => "student"): VideoRevi
   const reviews = new Map<string, VideoReview>();
   const files = new Map<string, { url: string; type: string }>();
   const failedOnce = new Set<string>();
+  // The mock student's notifications, newest first. The teacher has none.
+  let notifications: AppNotification[] = [];
   let nextId = 1;
 
   // One finished review so the review screen can be seen straight away. It
@@ -477,6 +543,14 @@ function createMockApi(getViewer: () => MockViewer = () => "student"): VideoRevi
       progress: undefined,
       transcript: sampleTranscript(duration),
       feedback: sampleFeedback(duration),
+    });
+    notifications.unshift({
+      id: `note-${nextId++}`,
+      kind: "FEEDBACK_READY",
+      reviewId: id,
+      title: "Your feedback is ready",
+      body: `"${r.title}" has been reviewed.`,
+      createdAt: new Date().toISOString(),
     });
   }
 
@@ -553,6 +627,17 @@ function createMockApi(getViewer: () => MockViewer = () => "student"): VideoRevi
       const r = find(id);
       if (r.sourceKind !== "link" && r.videoUrl) URL.revokeObjectURL(r.videoUrl);
       reviews.delete(id);
+      notifications = notifications.filter((n) => n.reviewId !== id);
+    },
+    async listNotifications() {
+      return getViewer() === "student" ? structuredClone(notifications) : [];
+    },
+    async markNotificationRead(id) {
+      notifications = notifications.map((n) => (n.id === id && !n.readAt ? { ...n, readAt: new Date().toISOString() } : n));
+    },
+    async markAllNotificationsRead() {
+      const now = new Date().toISOString();
+      notifications = notifications.map((n) => (n.readAt ? n : { ...n, readAt: now }));
     },
   };
 }
@@ -997,6 +1082,94 @@ function directMediaUrl(r: Review): string | null {
   return /\.(mp4|webm|ogg|mov|m4v|mp3|m4a|wav)(\?.*)?$/i.test(r.videoUrl) ? r.videoUrl : null;
 }
 
+/**
+ * Cuts the transcript into captions short enough to sit over the video (two
+ * lines of about 42 characters). Long segments, where the speaker never
+ * pauses, are split at word boundaries, preferring the end of a sentence, and
+ * each piece gets a share of the segment's time in proportion to its length.
+ * Mirrors `buildCues` in server/src/captions.ts.
+ */
+export function buildCues(transcript: TranscriptSegment[], maxChars = 84): CaptionCue[] {
+  const cues: CaptionCue[] = [];
+  for (const seg of transcript) {
+    const text = seg.text.replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    if (text.length <= maxChars) {
+      cues.push({ start: seg.start, end: seg.end, text });
+      continue;
+    }
+    const pieces: string[] = [];
+    let line = "";
+    for (const word of text.split(" ")) {
+      if (line && line.length + 1 + word.length > maxChars) {
+        pieces.push(line);
+        line = word;
+      } else line = line ? `${line} ${word}` : word;
+      if (/[.?!]["')\]]?$/.test(line) && line.length >= maxChars / 2) {
+        pieces.push(line);
+        line = "";
+      }
+    }
+    if (line) pieces.push(line);
+    const total = pieces.reduce((n, p) => n + p.length, 0);
+    const span = Math.max(0, seg.end - seg.start);
+    let used = 0;
+    pieces.forEach((piece, i) => {
+      const start = seg.start + (span * used) / total;
+      used += piece.length;
+      const end = i === pieces.length - 1 ? seg.end : seg.start + (span * used) / total;
+      cues.push({ start, end, text: piece });
+    });
+  }
+  return cues;
+}
+
+interface TranscriptHit {
+  /** Seconds to seek to: where the matching words begin. */
+  time: number;
+  /** The words around the match, split so the match can be highlighted. */
+  before: string;
+  match: string;
+  after: string;
+}
+
+/**
+ * Every place `query` was said, in order. Case-insensitive. `time` is estimated
+ * from how far into its segment the match starts, so a hit late in a long
+ * segment seeks close to the words rather than to the start of the segment.
+ */
+function searchTranscript(lines: TranscriptSegment[], query: string, limit = 50): TranscriptHit[] {
+  const needle = query.replace(/\s+/g, " ").trim().toLowerCase();
+  const hits: TranscriptHit[] = [];
+  if (!needle) return hits;
+  for (const l of lines) {
+    const text = l.text.replace(/\s+/g, " ").trim();
+    const hay = text.toLowerCase();
+    for (let at = hay.indexOf(needle); at !== -1; at = hay.indexOf(needle, at + needle.length)) {
+      if (hits.length >= limit) return hits;
+      const from = Math.max(0, at - 50);
+      const to = Math.min(text.length, at + needle.length + 70);
+      hits.push({
+        time: l.start + (Math.max(0, l.end - l.start) * at) / Math.max(1, text.length),
+        before: (from > 0 ? "…" : "") + text.slice(from, at),
+        match: text.slice(at, at + needle.length),
+        after: text.slice(at + needle.length, to) + (to < text.length ? "…" : ""),
+      });
+    }
+  }
+  return hits;
+}
+
+/** "just now", "5 min ago", "3 hr ago", then the date. */
+function timeAgo(iso: string): string {
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (!Number.isFinite(mins)) return "";
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  if (mins < 60 * 24) return `${Math.floor(mins / 60)} hr ago`;
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 const isProcessing = (r: Review) => r.status === "QUEUED" || r.status === "PROCESSING";
 
 /** The feedback step that shows note `key` (step 0 is the overview). */
@@ -1173,16 +1346,20 @@ export function VideoReviewTool({ api, role }: { api: VideoReviewApi; role: Role
             {isTeacher ? "Your students' submitted speeches and their feedback." : "Submit a speech and get it reviewed."}
           </p>
         </div>
-        {notice && (
-          <p
-            role="status"
-            className={`rounded-[3px] border px-3 py-1.5 text-[12.5px] font-semibold ${
-              notice.tone === "error" ? "border-red-200 bg-red-50 text-red-700" : "border-[#fde68a] bg-[#fefce8] text-[#a16207]"
-            }`}
-          >
-            {notice.text}
-          </p>
-        )}
+        <div className="flex items-center gap-3">
+          {notice && (
+            <p
+              role="status"
+              className={`rounded-[3px] border px-3 py-1.5 text-[12.5px] font-semibold ${
+                notice.tone === "error" ? "border-red-200 bg-red-50 text-red-700" : "border-[#fde68a] bg-[#fefce8] text-[#a16207]"
+              }`}
+            >
+              {notice.text}
+            </p>
+          )}
+          {/* A review settling is when a notification appears, so refresh then. */}
+          <NotificationBell api={api} refreshKey={processingIds} onOpenReview={open} />
+        </div>
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col">
@@ -1208,6 +1385,119 @@ export function VideoReviewTool({ api, role }: { api: VideoReviewApi; role: Role
           />
         )}
       </div>
+    </div>
+  );
+}
+
+// ───────────────────────── notifications ─────────────────────────
+
+/**
+ * The bell in the header: an unread count, and a panel listing the user's
+ * notifications. It renders whatever title and body the server sends, so new
+ * kinds of notification need no change here. Opening one marks it read and
+ * goes to its review.
+ */
+function NotificationBell({ api, refreshKey, onOpenReview }: { api: VideoReviewApi; refreshKey: string; onOpenReview: (reviewId: string) => void }) {
+  const [items, setItems] = useState<AppNotification[]>([]);
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const unread = items.filter((n) => !n.readAt).length;
+
+  const load = useCallback(() => {
+    api.listNotifications().then(setItems).catch(() => {});
+  }, [api]);
+
+  useEffect(() => {
+    load();
+    const timer = window.setInterval(load, 30000);
+    return () => window.clearInterval(timer);
+  }, [load, refreshKey]);
+
+  // Click outside or Escape closes the panel.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  function openOne(n: AppNotification) {
+    setOpen(false);
+    if (!n.readAt) {
+      setItems((prev) => prev.map((x) => (x.id === n.id ? { ...x, readAt: new Date().toISOString() } : x)));
+      api.markNotificationRead(n.id).catch(load);
+    }
+    onOpenReview(n.reviewId);
+  }
+
+  function readAll() {
+    const now = new Date().toISOString();
+    setItems((prev) => prev.map((x) => (x.readAt ? x : { ...x, readAt: now })));
+    api.markAllNotificationsRead().catch(load);
+  }
+
+  return (
+    <div ref={rootRef} className="relative flex-shrink-0">
+      <button
+        type="button"
+        aria-label={unread ? `Notifications, ${unread} unread` : "Notifications"}
+        aria-expanded={open}
+        onClick={() => {
+          setOpen(!open);
+          if (!open) load();
+        }}
+        className={`relative grid h-9 w-9 place-items-center rounded-[6px] border bg-white transition-colors hover:text-[#ca8a04] ${
+          open ? "border-[#ca8a04] text-[#ca8a04]" : "border-[#e0e0e0] text-[#6b7280]"
+        }`}
+      >
+        <Bell className="h-4 w-4" />
+        {unread > 0 && (
+          <span className="absolute -right-1.5 -top-1.5 grid h-[18px] min-w-[18px] place-items-center rounded-full bg-[#facc15] px-1 text-[10.5px] font-extrabold tabular-nums text-[#1f2430]">
+            {unread > 9 ? "9+" : unread}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <section
+          aria-label="Notifications"
+          className="absolute right-0 top-full z-30 mt-2 flex max-h-[420px] w-[320px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[6px] border border-[#e0e0e0] bg-white shadow-lg"
+        >
+          <header className="flex flex-shrink-0 items-center justify-between gap-2 border-b border-[#e0e0e0] px-4 py-2.5">
+            <span className="text-[13px] font-bold text-[#1f2430]">Notifications</span>
+            {unread > 0 && (
+              <button type="button" onClick={readAll} className="text-[12px] font-semibold text-[#ca8a04] hover:text-[#1f2430]">
+                Mark all read
+              </button>
+            )}
+          </header>
+          {items.length === 0 ? (
+            <p className="px-4 py-8 text-center text-[13px] text-[#6b7280]">No notifications yet.</p>
+          ) : (
+            <ul className="min-h-0 flex-1 overflow-y-auto">
+              {items.map((n) => (
+                <li key={n.id} className="border-b border-[#f0efea] last:border-b-0">
+                  <button type="button" onClick={() => openOne(n)} className="flex w-full items-start gap-2.5 px-4 py-3 text-left transition-colors hover:bg-[#f5f4f0]">
+                    <span aria-hidden className={`mt-[6px] h-2 w-2 flex-shrink-0 rounded-full ${n.readAt ? "bg-transparent" : "bg-[#facc15]"}`} />
+                    <span className="min-w-0 flex-1">
+                      <span className={`block text-[13px] text-[#1f2430] ${n.readAt ? "font-medium" : "font-bold"}`}>{n.title}</span>
+                      <span className="block text-[12.5px] leading-snug text-[#6b7280]">{n.body}</span>
+                      <span className="mt-0.5 block text-[11.5px] text-[#9ca3af]">{timeAgo(n.createdAt)}</span>
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
     </div>
   );
 }
@@ -1985,6 +2275,12 @@ function ReviewScreen({ review, onBack, onRetry }: { review: Review; onBack: () 
   const [stepIdx, setStepIdx] = useState(0);
   const [showTranscript, setShowTranscript] = useState(false);
   const [pauseAtNotes, setPauseAtNotes] = useState(true);
+  const [showCaptions, setShowCaptions] = useState(true);
+
+  // Captions come from the transcript stored on the review, so they exist as
+  // soon as the speech is transcribed, with or without feedback.
+  const cues = useMemo(() => buildCues(review.transcript ?? []), [review.transcript]);
+  const cue = showCaptions ? cues.find((c) => curTime >= c.start && curTime < c.end) : undefined;
   const [gateKey, setGateKey] = useState<number | null>(null);
 
   // "Pause at notes": each note stops the video once as the playhead reaches it.
@@ -2132,6 +2428,14 @@ function ReviewScreen({ review, onBack, onRetry }: { review: Review; onBack: () 
                   </p>
                 </div>
               )}
+              {/* Above the player's own controls, and never in the way of a click. */}
+              {cue && (
+                <div className="pointer-events-none absolute inset-x-0 bottom-14 z-10 flex justify-center px-4">
+                  <p className="max-w-[min(90%,640px)] rounded-[4px] bg-black/75 px-3 py-1.5 text-center text-[15px] font-medium leading-snug text-white">
+                    {cue.text}
+                  </p>
+                </div>
+              )}
             </div>
 
             <Timeline notes={notes} duration={duration} curTime={curTime} onSeek={seek} />
@@ -2149,6 +2453,24 @@ function ReviewScreen({ review, onBack, onRetry }: { review: Review; onBack: () 
               <span className="text-[13px] font-semibold tabular-nums" style={{ color: C.darkInk }}>
                 {fmtClock(curTime)} / {fmtClock(duration)}
               </span>
+              <div className="ml-auto flex items-center gap-2">
+              {cues.length > 0 && (
+                <button
+                  type="button"
+                  aria-pressed={showCaptions}
+                  aria-label="Captions"
+                  title={showCaptions ? "Hide captions" : "Show captions"}
+                  onClick={() => setShowCaptions(!showCaptions)}
+                  className="rounded-full px-3 py-1.5 text-[12px] font-bold"
+                  style={
+                    showCaptions
+                      ? { background: C.accentBright, color: C.ink }
+                      : { background: C.darkSoft, color: C.darkMuted, border: `1px solid ${C.darkLine}` }
+                  }
+                >
+                  CC
+                </button>
+              )}
               {fb && (
                 <button
                   type="button"
@@ -2157,7 +2479,7 @@ function ReviewScreen({ review, onBack, onRetry }: { review: Review; onBack: () 
                     setPauseAtNotes(!pauseAtNotes);
                     if (pauseAtNotes && gateOpenRef.current) resume(); // turning it off mid-stop carries on
                   }}
-                  className="ml-auto rounded-full px-3 py-1.5 text-[12px] font-bold"
+                  className="rounded-full px-3 py-1.5 text-[12px] font-bold"
                   style={
                     pauseAtNotes
                       ? { background: C.accentBright, color: C.ink }
@@ -2167,6 +2489,7 @@ function ReviewScreen({ review, onBack, onRetry }: { review: Review; onBack: () 
                   Pause at notes
                 </button>
               )}
+              </div>
             </div>
           </div>
 
@@ -2473,10 +2796,47 @@ function Timeline({ notes, duration, curTime, onSeek }: { notes: Note[]; duratio
 
 function Transcript({ review, curTime, onSeek }: { review: Review; curTime: number; onSeek: (s: number) => void }) {
   const lines = review.transcript ?? [];
+  const [query, setQuery] = useState("");
+  const hits = useMemo(() => searchTranscript(lines, query), [lines, query]);
   if (!lines.length) return <p className="my-auto text-center text-[13px] text-[#6b7280]">No transcript on this round.</p>;
+  const searching = query.trim().length > 0;
   return (
     <div className="space-y-1.5">
-      {lines.map((l, i) => {
+      <div className="sticky -top-5 z-10 -mx-1 -mt-5 bg-white px-1 pb-2 pt-5">
+        <label className="flex items-center gap-2 rounded-[3px] border border-[#e0e0e0] px-2.5 py-1.5 focus-within:border-[#ca8a04]">
+          <Search className="h-3.5 w-3.5 flex-shrink-0 text-[#6b7280]" />
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search what was said"
+            aria-label="Search the transcript"
+            className="min-w-0 flex-1 bg-transparent text-[13px] text-[#1f2430] outline-none placeholder:text-[#9ca3af]"
+          />
+          {searching && (
+            <span role="status" className="flex-shrink-0 text-[11.5px] tabular-nums text-[#6b7280]">
+              {hits.length === 0 ? "No matches" : hits.length === 1 ? "1 match" : `${hits.length} matches`}
+            </span>
+          )}
+        </label>
+      </div>
+      {searching &&
+        hits.map((h, i) => (
+          <button
+            key={i}
+            type="button"
+            onClick={() => onSeek(h.time)}
+            className="flex w-full items-start gap-2.5 rounded-[3px] px-1 text-left transition-colors hover:bg-[#fefce8]"
+          >
+            <span className="min-w-[42px] flex-shrink-0 text-[11.5px] font-bold tabular-nums text-[#ca8a04]">{fmtClock(h.time)}</span>
+            <span className="min-w-0 flex-1 text-[13px] leading-relaxed text-[#1f2430]">
+              {h.before}
+              <mark className="rounded-[2px] bg-[#fde68a] px-0.5 text-[#1f2430]">{h.match}</mark>
+              {h.after}
+            </span>
+          </button>
+        ))}
+      {!searching && lines.map((l, i) => {
         const now = curTime >= l.start && curTime < l.end;
         return (
           <div key={i} className={`flex items-start gap-2.5 rounded-[3px] px-1 ${now ? "bg-[#fefce8]" : ""}`}>

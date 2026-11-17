@@ -43,6 +43,50 @@ export interface CoachSummary {
   date: string;
 }
 
+/** A timestamped comment a teacher added to a student's review. */
+export interface TeacherNote {
+  id: string;
+  /** "m:ss" or "m:ss-m:ss", inside the recording. */
+  time: string;
+  text: string;
+  kind: "strength" | "improvement";
+  author: string;
+  /** ISO 8601. */
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** An in-app notification, from GET /notifications. */
+export interface AppNotification {
+  id: string;
+  kind: "FEEDBACK_READY";
+  reviewId: string;
+  title: string;
+  body: string;
+  /** ISO 8601. */
+  createdAt: string;
+  /** Absent until the user has read it. */
+  readAt?: string;
+}
+
+/** One caption: a short stretch of the transcript, sized to sit over the video. */
+export interface CaptionCue {
+  start: number;
+  end: number;
+  text: string;
+}
+
+/** One place the search text was said, from GET /video-reviews/:id/search. */
+export interface TranscriptMatch {
+  /** Seconds to seek to: where the matching words begin. */
+  time: number;
+  /** The transcript segment the match is in. */
+  start: number;
+  end: number;
+  /** The words around the match. */
+  text: string;
+}
+
 /** The whole AI review of one speech. Exactly what the UI renders. */
 export interface VideoFeedback {
   score: number;
@@ -87,6 +131,8 @@ export interface VideoReview {
   error?: string;
   transcript?: TranscriptSegment[];
   feedback?: VideoFeedback;
+  /** Timestamped comments from the student's teacher, oldest first. */
+  teacherNotes?: TeacherNote[];
 }
 
 export interface UploadTicket {

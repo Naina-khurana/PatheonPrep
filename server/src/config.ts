@@ -21,6 +21,11 @@ export const config = {
   dataDir: path.resolve(process.env.DATA_DIR ?? "data"),
   groqApiKey: process.env.GROQ_API_KEY?.trim() ?? "",
   groqModel: process.env.GROQ_WHISPER_MODEL?.trim() || "whisper-large-v3",
+  /** Email goes through Resend when both are set; otherwise it is logged, not sent. */
+  resendApiKey: process.env.RESEND_API_KEY?.trim() ?? "",
+  emailFrom: process.env.EMAIL_FROM?.trim() ?? "",
+  /** Where the link in a notification email points. Defaults to the first WEB_ORIGIN. */
+  appUrl: (process.env.APP_URL?.trim() || (process.env.WEB_ORIGIN ?? "http://localhost:5173").split(",")[0].trim()).replace(/\/+$/, ""),
   signingSecret: process.env.SIGNING_SECRET?.trim() || randomBytes(32).toString("hex"),
   ffmpegPath: process.env.FFMPEG_PATH || "ffmpeg",
   ffprobePath: process.env.FFPROBE_PATH || "ffprobe",

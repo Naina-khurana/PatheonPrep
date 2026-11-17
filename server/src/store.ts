@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
-import type { ReviewSource, TranscriptSegment, VideoFeedback, VideoReviewStatus, VideoSourceKind } from "./contract.js";
+import type { AppNotification, CoachSummary, ReviewSource, TeacherNote, TranscriptSegment, VideoFeedback, VideoReviewStatus, VideoSourceKind } from "./contract.js";
 
 /** An upload ticket and, once the PUT finishes, the stored file. */
 export interface UploadRecord {
@@ -37,13 +37,22 @@ export interface ReviewRecord {
   error?: string;
   transcript?: TranscriptSegment[];
   feedback?: VideoFeedback;
+  /** Written by a teacher. Kept apart from `feedback`, which a retry clears. */
+  coachSummary?: CoachSummary;
+  teacherNotes?: TeacherNote[];
   /** Held by the worker run that owns this review; cleared when it ends. */
   runId?: string;
+}
+
+/** An in-app notification as stored: the contract's shape plus who it is for. */
+export interface NotificationRecord extends AppNotification {
+  userId: string;
 }
 
 interface Snapshot {
   reviews: ReviewRecord[];
   uploads: UploadRecord[];
+  notifications: NotificationRecord[];
 }
 
 /**
@@ -53,6 +62,7 @@ interface Snapshot {
 export class Store {
   private reviews = new Map<string, ReviewRecord>();
   private uploads = new Map<string, UploadRecord>();
+  private notifications = new Map<string, NotificationRecord>();
   private saveTimer: NodeJS.Timeout | null = null;
   readonly file: string;
 
@@ -63,6 +73,7 @@ export class Store {
       const snap = JSON.parse(fs.readFileSync(this.file, "utf8")) as Partial<Snapshot>;
       for (const r of snap.reviews ?? []) this.reviews.set(r.id, r);
       for (const u of snap.uploads ?? []) this.uploads.set(u.fileKey, u);
+      for (const n of snap.notifications ?? []) this.notifications.set(n.id, n);
     }
   }
 
@@ -112,6 +123,23 @@ export class Store {
     this.scheduleSave();
   }
 
+  /** One user's notifications, newest first. */
+  listNotifications(userId: string): NotificationRecord[] {
+    return [...this.notifications.values()].filter((n) => n.userId === userId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+  getNotification(id: string): NotificationRecord | undefined {
+    return this.notifications.get(id);
+  }
+  putNotification(n: NotificationRecord): NotificationRecord {
+    this.notifications.set(n.id, n);
+    this.scheduleSave();
+    return n;
+  }
+  deleteNotificationsForReview(reviewId: string) {
+    for (const n of this.notifications.values()) if (n.reviewId === reviewId) this.notifications.delete(n.id);
+    this.scheduleSave();
+  }
+
   private scheduleSave() {
     if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => {
@@ -123,7 +151,7 @@ export class Store {
 
   /** Writes the snapshot now. Atomic: temp file, then rename. */
   flush() {
-    const snap: Snapshot = { reviews: this.listReviews(), uploads: [...this.uploads.values()] };
+    const snap: Snapshot = { reviews: this.listReviews(), uploads: [...this.uploads.values()], notifications: [...this.notifications.values()] };
     const tmp = `${this.file}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(snap, null, 2));
     fs.renameSync(tmp, this.file);

@@ -5,6 +5,8 @@ export interface Viewer {
   id: string;
   name: string;
   role: "student" | "teacher";
+  /** Where "your feedback is ready" emails go. Comes from the host app's user record. */
+  email?: string;
   /** Students whose reviews this teacher may read. Empty for students. */
   studentIds: string[];
 }
@@ -13,15 +15,19 @@ export interface Viewer {
 // and `requireViewer` with a lookup of its session (cookie or bearer token).
 // Identity never comes from the request body.
 const DEV_USERS: Record<string, Viewer> = {
-  "student-1": { id: "student-1", name: "Jordan Lee", role: "student", studentIds: [] },
-  "student-2": { id: "student-2", name: "Sam Patel", role: "student", studentIds: [] },
+  "student-1": { id: "student-1", email: "student-1@example.com", name: "Jordan Lee", role: "student", studentIds: [] },
+  "student-2": { id: "student-2", email: "student-2@example.com", name: "Sam Patel", role: "student", studentIds: [] },
   // Not in teacher-1's class, so the teacher must never see their reviews.
-  "student-3": { id: "student-3", name: "Riley Chen", role: "student", studentIds: [] },
-  "teacher-1": { id: "teacher-1", name: "Ms. Rivera", role: "teacher", studentIds: ["student-1", "student-2"] },
+  "student-3": { id: "student-3", email: "student-3@example.com", name: "Riley Chen", role: "student", studentIds: [] },
+  "teacher-1": { id: "teacher-1", email: "teacher-1@example.com", name: "Ms. Rivera", role: "teacher", studentIds: ["student-1", "student-2"] },
 };
 
 export function displayName(userId: string): string {
   return DEV_USERS[userId]?.name ?? "Unknown student";
+}
+
+export function userById(userId: string): Viewer | undefined {
+  return DEV_USERS[userId];
 }
 
 /** Reads the dev identity header and puts the viewer on `res.locals`. */

@@ -3,18 +3,19 @@ import { createWriteStream, existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { Router, type NextFunction, type Request, type Response } from "express";
+import { Router } from "express";
 import { canSee, displayName, requireViewer, viewerOf, type Viewer } from "./auth.js";
+import { registerCaptionRoutes } from "./captions.js";
+import { registerCommentRoutes } from "./comments.js";
 import { config } from "./config.js";
 import { ALL_SPEECH_TYPES, DEBATE_FORMATS, LIMITS, SPEECH_TYPES, type DebateFormat, type ReviewSource, type VideoReview } from "./contract.js";
 import { HttpError } from "./errors.js";
+import { isObj, notFound, wrap } from "./httpUtil.js";
 import { signedMediaUrl, uploadUrl, verify } from "./signing.js";
 import { store, type ReviewRecord } from "./store.js";
 import type { ReviewWorker } from "./worker.js";
 
 const FILE_KEY = /^[a-f0-9]{32}$/;
-const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-const notFound = () => new HttpError(404, "That review doesn't exist.", "NOT_FOUND");
 const maxMb = Math.round(LIMITS.maxBytes / 1024 / 1024);
 const contentTypes = LIMITS.contentTypes as readonly string[];
 
@@ -43,15 +44,11 @@ export function toClientReview(r: ReviewRecord, viewer: Viewer): VideoReview {
     progress: r.progress,
     error: r.error,
     transcript: r.transcript,
-    feedback: r.feedback,
+    // A teacher's summary is stored apart from the AI feedback so a retry never loses it.
+    feedback: r.feedback && r.coachSummary ? { ...r.feedback, coachSummary: r.coachSummary } : r.feedback,
+    teacherNotes: r.teacherNotes?.length ? r.teacherNotes : undefined,
   };
 }
-
-/** Lets `async (req, res) => …` handlers throw into Express's error handler. */
-const wrap =
-  (fn: (req: Request, res: Response) => Promise<unknown> | unknown) => (req: Request, res: Response, next: NextFunction) => {
-    Promise.resolve(fn(req, res)).catch(next);
-  };
 
 function choice(value: unknown, allowed: readonly string[], what: string): string | undefined {
   if (value === undefined || value === null || value === "") return undefined;
@@ -104,7 +101,7 @@ function parseCreateBody(body: unknown, viewer: Viewer) {
   return { title, notes, format, speechType, source };
 }
 
-/** `/video-reviews`: the six endpoints of the contract. */
+/** `/video-reviews`: the six endpoints of the contract, plus teacher comments, captions and search. */
 export function createReviewRouter(worker: ReviewWorker): Router {
   const r = Router();
   r.use(requireViewer);
@@ -207,6 +204,7 @@ export function createReviewRouter(worker: ReviewWorker): Router {
       if (review.studentId !== viewer.id) throw new HttpError(403, "Only the student who submitted this review can delete it.", "OWNER_ONLY");
       // Removing the record first makes any in-flight worker run a no-op.
       store.deleteReview(review.id);
+      store.deleteNotificationsForReview(review.id);
       const files = [store.audioPath(review.id), store.handoffPath(review.id)];
       if (review.source.kind !== "link") {
         files.push(store.mediaPath(review.source.fileKey));
@@ -216,6 +214,9 @@ export function createReviewRouter(worker: ReviewWorker): Router {
       res.json({ ok: true });
     }),
   );
+
+  registerCommentRoutes(r);
+  registerCaptionRoutes(r);
 
   return r;
 }

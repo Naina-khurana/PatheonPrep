@@ -106,7 +106,8 @@ Automated:
 ```bash
 cd server
 npm run typecheck     # tsc
-npm test              # 18 tests: visibility rules, uploads, signed links, limits, validation
+npm test              # 28 tests: visibility rules, uploads, signed links, limits, validation,
+                      # teacher comments, captions, search, notifications
 cd ../web
 npm run build         # tsc + vite
 ```
@@ -141,8 +142,12 @@ server/                      Our backend. Express + TypeScript, run with tsx.
   src/index.ts               Boot: starts the HTTP server and the worker
   src/app.ts                 Express app: CORS, routes, JSON error handler
   src/routes.ts              The six /video-reviews endpoints, PUT /uploads, GET /media
+  src/comments.ts            Teacher comments: the coach summary and timestamped notes
+  src/captions.ts            Caption cues, WebVTT and transcript search
+  src/notifications.ts       "Feedback is ready": in-app notifications and the email
+  src/mailer.ts              Email through Resend, or the server log when no key is set
   src/auth.ts                DEV identity (X-Dev-User header) and the visibility rule
-  src/store.ts               Reviews and uploads, persisted to data/reviews.json
+  src/store.ts               Reviews, uploads and notifications, persisted to data/reviews.json
   src/signing.ts             HMAC-signed upload and playback links
   src/worker.ts              The job queue: fetch, extract audio, transcribe, analyse
   src/contract.ts            The API types, mirrored from VideoReview.tsx
@@ -246,6 +251,43 @@ review:
    `parseCreateBody` in `routes.ts`. Reject anything you don't recognise with a readable
    `HttpError(400, …)`.
 4. Add a test in `server/test/api.test.ts`.
+
+### Endpoints beyond the client's contract
+
+These back the Milestone 2 features. All take the same identity as the rest and follow the
+same visibility rule: a review the caller may not see is a 404.
+
+| Method | Path | Purpose |
+|---|---|---|
+| PUT | `/video-reviews/:id/coach-summary` | Teacher adds or replaces the summary. Body `{ headline, body, improvements? }`. Author, initials and date come from the session. Returns `{ review }` |
+| DELETE | `/video-reviews/:id/coach-summary` | Teacher removes it |
+| POST | `/video-reviews/:id/teacher-notes` | Teacher adds a note. Body `{ time, text, kind: "strength" \| "improvement" }`. `201 { review }` |
+| PUT, DELETE | `/video-reviews/:id/teacher-notes/:noteId` | Teacher edits or removes a note |
+| GET | `/video-reviews/:id/captions` | `{ cues: [{ start, end, text }] }`, the transcript cut into caption-sized pieces |
+| GET | `/video-reviews/:id/captions.vtt` | The same as a WebVTT file |
+| GET | `/video-reviews/:id/search?q=` | `{ matches: [{ time, start, end, text }] }`; seek to `time` |
+| GET | `/notifications` | `{ notifications, unreadCount }` for the caller |
+| POST | `/notifications/:id/read`, `/notifications/read-all` | Mark as read |
+
+Teacher comments are only accepted once a review is `REVIEWED` (409 before that), and only
+from a teacher of that student (403 for students). They are stored apart from the AI
+feedback, so a retry keeps them. The summary comes back as `feedback.coachSummary`, which
+the delivered UI already renders, and the notes as `review.teacherNotes`.
+
+When a review reaches `REVIEWED`, the worker calls `notifyFeedbackReady`: the student gets
+an in-app notification and an email. Email needs `RESEND_API_KEY` and `EMAIL_FROM` in
+`server/.env`; without them the email is logged instead of sent. A failed email never
+fails the review. Addresses come from the dev roster in `auth.ts` until the host app's
+users replace it.
+
+The UI draws captions itself from `review.transcript` (the CC button under the player),
+because a `<track>` element can't send the auth header.
+
+In the UI: the bell in the Video Review header lists notifications (it polls
+`GET /notifications` every 30 seconds and whenever a review settles) and opens the review
+a notification is about. The search box is at the top of the Transcript panel. It searches
+`review.transcript` in the browser, which is already loaded, so the UI does not call
+`/search` or `/captions`; those are there for other clients.
 
 ### Adding an endpoint
 

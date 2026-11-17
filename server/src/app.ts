@@ -2,6 +2,7 @@ import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { config } from "./config.js";
 import { HttpError } from "./errors.js";
+import { createNotificationRouter } from "./notifications.js";
 import { createReviewRouter, getMedia, putUpload } from "./routes.js";
 import type { ReviewWorker } from "./worker.js";
 
@@ -23,6 +24,7 @@ export function createApp(worker: ReviewWorker) {
   app.put("/uploads/:fileKey", putUpload);
   app.get("/media/:fileKey", getMedia);
   app.use("/video-reviews", createReviewRouter(worker));
+  app.use("/notifications", createNotificationRouter());
 
   app.use((_req, res) => res.status(404).json({ error: "Not found.", code: "NOT_FOUND" }));
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
