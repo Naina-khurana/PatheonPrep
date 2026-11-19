@@ -29,3 +29,6 @@ Thumbs.db
 # logs
 *.log
 npm-debug.log*
+
+# server state (uploads, audio, review db)
+server/data/
