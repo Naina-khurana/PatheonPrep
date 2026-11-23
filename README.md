@@ -8,11 +8,9 @@ their students' reviews, read only.
 The client gave us the finished frontend. We build everything behind it: the server,
 storage, transcription and the AI analysis. Read `docs/PRD.md` first.
 
-**Where things stand.** The server, file storage, link fetching and transcription
-(stage 1) are built and tested. The analysis (stage 2), which turns a transcript into
-feedback, is not. Until it is, every review ends `FAILED` with "Your speech was
-transcribed, but the feedback stage isn't built yet." See [Adding the analysis
-stage](#adding-the-analysis-stage).
+**Where things stand.** The worker transcribes speech, generates feedback using a
+configured judge and rubric, then validates the feedback before saving the review.
+See [Configuring the analysis stage](#adding-the-analysis-stage).
 
 ## Contents
 
@@ -106,7 +104,7 @@ Automated:
 ```bash
 cd server
 npm run typecheck     # tsc
-npm test              # 28 tests: visibility rules, uploads, signed links, limits, validation,
+npm test              # visibility rules, uploads, signed links, limits, validation,
                       # teacher comments, captions, search, notifications
 cd ../web
 npm run build         # tsc + vite
@@ -118,8 +116,8 @@ By hand, with both servers running:
    `https://www.youtube.com/watch?v=0fgLUQDqtiE`, pick Lincoln-Douglas and
    "Affirmative Constructive (1AC)", submit.
 2. Watch the stage move through "Checking the link", "Fetching the video", "Extracting
-   audio", "Transcribing audio". It ends `FAILED` with the "feedback stage isn't built yet"
-   message. That is correct today.
+   audio", "Transcribing audio". With the judge and the selected rubric configured, it
+   continues through "Writing feedback" and ends `REVIEWED`.
 3. Confirm the transcript exists. The UI only shows it once feedback exists, so look at
    `server/data/handoff/<review id>.json`, or:
    ```bash
@@ -199,44 +197,17 @@ refetches the review on open and while polling, so it always has a fresh one.
 
 ### Adding the analysis stage
 
-This is the next piece of work. It is one function:
+Set `JUDGE_MODEL` in `server/.env`. The judge
+uses a chat-completions model with JSON mode. The default endpoint is Groq and
+can reuse `GROQ_API_KEY`. Set `JUDGE_ENDPOINT` to the full chat-completions URL
+and `JUDGE_API_KEY` for another OpenAI-compatible provider.
 
-```ts
-// server/src/pipeline/analyze.ts
-export const analyzeTranscript: AnalyzeStage = async (input, ctx) => { ... };
-```
-
-`input` is a `TranscriptionHandoff` (`server/src/pipeline/handoff.ts`):
-
-| Field | What it is |
-|---|---|
-| `transcript` | `TranscriptSegment[]`, each `{ start, end, text }` in seconds |
-| `durationSeconds` | Length of the recording. Every note time must be inside it |
-| `format` | "Public Forum", "Lincoln-Douglas" or "Policy", if the student picked one |
-| `speechType` | e.g. "Rebuttal", one of `SPEECH_TYPES[format]`, if picked |
-| `notes` | What the student typed when submitting, if anything |
-| `title`, `reviewId`, `transcription` | Context and provenance |
-
-`ctx.signal` aborts when the review times out or is deleted; pass it to your fetch calls.
-`ctx.onProgress(0..1)` drives the progress bar during this stage.
-
-Return a complete `VideoFeedback` (`server/src/contract.ts`, same as section 1 of
-`VideoReview.tsx`). Note times are `"m:ss"` or `"m:ss-m:ss"` and section ranges are
-`"m:ss-m:ss"`. `validateFeedback` runs on your output and the worker fails the review if
-it finds a problem, logging exactly what was wrong. Never return defaults, sample scores or
-feedback for a transcript you didn't read.
-
-How to work on it:
-
-- Put the model's API key in `server/.env` as a new variable and read it in
-  `server/src/config.ts` next to the Groq settings. Document it in `.env.example`.
-- Develop against real transcripts. Every review you run through the UI leaves its handoff
-  in `server/data/handoff/`, and `samples/transcripts/` has more. A small script that loads
-  one, calls `analyzeTranscript`, then `validateFeedback`, is a fast loop.
-- Write tests in `server/test/`. Mock the model call; assert on the validation result.
-- Milestone 2 items that belong in this stage: `feedback.metrics` (words per minute,
-  filler words, long pauses, all computable from the transcript), and tuning the prompt
-  to `format` and `speechType`.
+Set `JUDGE_RUBRIC_FILE` to the local path of the team rubric text.
+For a per-speech override, set `JUDGE_RUBRICS_JSON`. The rubric map is keyed by the exact format and speech type from the picker.
+For example, use `{"Public Forum":{"Rebuttal":"<approved rubric and grading scale>"}}`
+for Public Forum Rebuttal. The judge needs the approved rubric for the selected
+speech. Missing config, invalid feedback, or out-of-transcript note times fail
+the review before any grades are saved.
 
 ### Changing the API contract
 

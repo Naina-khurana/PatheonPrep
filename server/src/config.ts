@@ -21,6 +21,11 @@ export const config = {
   dataDir: path.resolve(process.env.DATA_DIR ?? "data"),
   groqApiKey: process.env.GROQ_API_KEY?.trim() ?? "",
   groqModel: process.env.GROQ_WHISPER_MODEL?.trim() || "whisper-large-v3",
+  judgeEndpoint: process.env.JUDGE_ENDPOINT?.trim() || "https://api.groq.com/openai/v1/chat/completions",
+  judgeModel: process.env.JUDGE_MODEL?.trim() ?? "",
+  judgeApiKey: process.env.JUDGE_API_KEY?.trim() || (!process.env.JUDGE_ENDPOINT?.trim() ? process.env.GROQ_API_KEY?.trim() : "") || "",
+  judgeRubricFile: process.env.JUDGE_RUBRIC_FILE?.trim() ?? "",
+  judgeRubricsJson: process.env.JUDGE_RUBRICS_JSON?.trim() ?? "",
   /** Email goes through Resend when both are set; otherwise it is logged, not sent. */
   resendApiKey: process.env.RESEND_API_KEY?.trim() ?? "",
   emailFrom: process.env.EMAIL_FROM?.trim() ?? "",

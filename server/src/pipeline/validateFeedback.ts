@@ -46,7 +46,7 @@ export function validateFeedback(fb: unknown, durationSeconds: number): string[]
   if (!Array.isArray(f.scoreBreakdown) || f.scoreBreakdown.length === 0) errors.push("scoreBreakdown is missing");
   else {
     f.scoreBreakdown.forEach((c, i) => {
-      if (!c || !nonEmpty(c.name) || !isScore(c.value)) errors.push(`scoreBreakdown[${i}] needs a name and a value from 1 to 10`);
+      if (!c || !nonEmpty(c.name) || (c.value !== null && !isScore(c.value))) errors.push(`scoreBreakdown[${i}] needs a name and a value from 1 to 10 or null`);
     });
   }
 
@@ -79,7 +79,9 @@ export function validateFeedback(fb: unknown, durationSeconds: number): string[]
     });
   }
 
-  if (f.metrics !== undefined) {
+  if (f.metrics !== undefined && (!f.metrics || typeof f.metrics !== "object" || Array.isArray(f.metrics))) {
+    errors.push("metrics must be an object");
+  } else if (f.metrics !== undefined) {
     const m = f.metrics as Record<string, unknown>;
     for (const k of ["wordsPerMinute", "fillerWords", "longPauses"]) {
       if (m[k] !== undefined && (typeof m[k] !== "number" || !Number.isFinite(m[k]) || (m[k] as number) < 0)) errors.push(`metrics.${k} must be a non-negative number`);

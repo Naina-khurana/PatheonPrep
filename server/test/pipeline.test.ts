@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { deliveryMetrics } from "../src/pipeline/deliveryMetrics.js";
 import { cleanSegments, whisperPrompt } from "../src/pipeline/transcribe.js";
 import { parseNoteTime, parseRange, validateFeedback } from "../src/pipeline/validateFeedback.js";
 import { userMessage } from "../src/worker.js";
@@ -105,6 +106,7 @@ describe("validateFeedback", () => {
 
   it("rejects non-objects and too many sections", () => {
     assert.equal(validateFeedback(null, 10).length, 1);
+    assert.ok(validateFeedback({ ...good, metrics: null }, 240).includes("metrics must be an object"));
     assert.ok(validateFeedback({ ...good, sections: Array(5).fill(good.sections[0]) }, 600).some((e) => e.includes("1 to 4")));
   });
 });
@@ -114,5 +116,17 @@ describe("userMessage", () => {
     assert.equal(userMessage(new PipelineError("No speech was found in the audio.")), "No speech was found in the audio.");
     assert.match(userMessage(new StageNotImplementedError("x")), /feedback stage isn't built yet/);
     assert.equal(userMessage(new TypeError("undefined is not a function")), "Something went wrong while processing this speech. Try again.");
+  });
+});
+
+describe("deliveryMetrics", () => {
+  it("counts transcribed fillers and ignores gaps covered by overlapping segments", () => {
+    const segments = [
+      { start: 0, end: 5, text: "Um, cities need transit." },
+      { start: 1, end: 2, text: "Uh." },
+      { start: 6, end: 7, text: "Like this." },
+      { start: 9, end: 10, text: "Take buses." },
+    ];
+    assert.deepEqual(deliveryMetrics(segments, 30), { wordsPerMinute: 18, fillerWords: 2, longPauses: 1 });
   });
 });

@@ -11,6 +11,7 @@ import { StageNotImplementedError, type TranscriptionHandoff } from "./pipeline/
 import { downloadAudio, inspectLink } from "./pipeline/link.js";
 import { extractMp3, probe } from "./pipeline/media.js";
 import { transcribeAudio } from "./pipeline/transcribe.js";
+import { deliveryMetrics } from "./pipeline/deliveryMetrics.js";
 import { validateFeedback } from "./pipeline/validateFeedback.js";
 import { notifyFeedbackReady } from "./notifications.js";
 import { store, type ReviewRecord } from "./store.js";
@@ -161,6 +162,7 @@ export class Worker implements ReviewWorker {
         console.error(`[worker] review ${id}: feedback rejected:\n  ${problems.join("\n  ")}`);
         throw new PipelineError("The feedback for this speech couldn't be produced. Try again.", "BAD_FEEDBACK");
       }
+      feedback.metrics = deliveryMetrics(t.segments, t.durationSeconds);
       const stored = patch({ status: "REVIEWED", stage: undefined, progress: 1, feedback, runId: undefined });
       // Tell the student, in the app and by email. Never fails the review.
       if (stored) void notifyFeedbackReady(store.getReview(id)!);

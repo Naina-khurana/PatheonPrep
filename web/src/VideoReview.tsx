@@ -100,7 +100,7 @@ export interface FeedbackSection {
 export interface ScoreCategory {
   name: string;
   /** 1.0–10.0. The UI shows it as a letter grade (see letterGrade). */
-  value: number;
+  value: number | null;
 }
 
 /** Optional delivery measurements from the audio (a nice-to-have). */
@@ -1211,7 +1211,7 @@ function currentNoteKey(notes: Note[], t: number): number | null {
 /** Plain-text export for "Download notes". */
 function notesText(r: Review, fb: VideoFeedback): string {
   const lines = [r.title, `Overall: ${letterGrade(fb.score)} (${fb.score.toFixed(1)}/10)`];
-  fb.scoreBreakdown.forEach((c) => lines.push(`  ${c.name}: ${letterGrade(c.value)} (${c.value.toFixed(1)})`));
+  fb.scoreBreakdown.forEach((c) => lines.push(`  ${c.name}: ${c.value === null ? "Not scored" : `${letterGrade(c.value)} (${c.value.toFixed(1)})`}`));
   if (fb.scoreSummary) lines.push("", fb.scoreSummary);
   fb.sections.forEach((sec) => {
     lines.push("", `${sec.title.toUpperCase()}  ${sec.range}`);
@@ -2660,8 +2660,8 @@ function Overview({ feedback, notes }: { feedback: VideoFeedback; notes: Note[] 
               <dt className="truncate text-[12.5px]" style={{ color: C.darkMuted }}>
                 {c.name}
               </dt>
-              <dd className="text-[16px] font-extrabold" style={{ color: C.darkInk }} title={`${c.value.toFixed(1)}/10`}>
-                {letterGrade(c.value)}
+              <dd className="text-[16px] font-extrabold" style={{ color: C.darkInk }} title={c.value === null ? undefined : `${c.value.toFixed(1)}/10`}>
+                {c.value === null ? "Not scored" : letterGrade(c.value)}
               </dd>
             </div>
           ))}

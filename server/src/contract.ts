@@ -25,7 +25,7 @@ export interface FeedbackSection {
 export interface ScoreCategory {
   name: string;
   /** 1.0–10.0 */
-  value: number;
+  value: number | null;
 }
 
 export interface DeliveryMetrics {
